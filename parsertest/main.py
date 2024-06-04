@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import logging
 
@@ -6,13 +7,15 @@ from parsertest.utils import get_selenium_driver
 from sbermarket import SbermarketParser
 
 BASE_URL = 'https://sbermarket.ru/'
-URL_FOR_CITY_ID = 'https://sbermarket.ru/api/v3/cities?lat=55.678088&lon=37.722738&with_pickup=true&per_page=500'
+URL_FOR_CITY_ID = ('https://sbermarket.ru/api/v3/cities?lat=55.678088&'
+                   'lon=37.722738&with_pickup=true&per_page=500')
 URL_PRODUCTS = "https://sbermarket.ru/api/web/v1/products"
 CITY_NAME = "Москва"
 STORE_NAME = "METRO"
 ADDRESS = "Москва, Проспект Мира, 211с1"
 ALL_PRODUCTS = "Все товары категории"
-CATEGORY = "Овощи, фрукты, орехи"
+CATEGORIES = ["Овощи, фрукты, орехи", "Сладости", "Мясо, птица"]
+PAGES = 3
 
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -21,76 +24,88 @@ HEADERS = {
     "Client-Token": "7ba97b6f4049436dab90c789f946ee2f",
     "Priority": "u=1, i",
     "Sbm-Forward-Tenant": "sbermarket",
-    "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+    "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125",'
+                 ' "Not.A/Brand";v="24"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
     "Sentry-Trace": "90b25b813df84e9e9823c156b4de4843-99de013166300b82-0",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/"
+                  "537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 }
 
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s '
+                                               '- %(message)s')
 
 
-def main():
+async def main():
     logging.info("Starting parser")
 
     PROXY = get_proxy()
     proxy = check_proxies(PROXY)
     driver = get_selenium_driver(proxy)
+    logging.info("Start process")
 
     parser = SbermarketParser(driver, HEADERS, BASE_URL, URL_PRODUCTS)
 
-    cookies = parser.get_cookies(BASE_URL)
+    cookies = await parser.get_cookies(BASE_URL)
 
-    city_data = parser.fetch_data(URL_FOR_CITY_ID, cookies)
+    city_data = await parser.fetch_data(URL_FOR_CITY_ID, cookies)
     city_id = parser.find_city_id(city_data.get('cities', []), CITY_NAME)
 
-    url_for_store = f'https://sbermarket.ru/api/v3/retailers?include=shipping_methods%2Cstores_count%2Cnearest_store%2Clabels&shipping_method=pickup_from_store&city_id={city_id}'
-    store_data = parser.fetch_data(url_for_store, cookies)
+    url_for_store = (f'https://sbermarket.ru/api/v3/retailers?include='
+                     f'shipping_methods%2Cstores_count%2Cnearest_store%'
+                     f'2Clabels&shipping_method=pickup_from_store&'
+                     f'city_id={city_id}')
+    store_data = await parser.fetch_data(url_for_store, cookies)
 
     shop_id, slug = parser.find_store_id(store_data, STORE_NAME)
-    all_stores = parser.fetch_all_stores(city_id, shop_id)
+    all_stores = await parser.fetch_all_stores(city_id, shop_id, cookies)
 
     store_id = parser.find_store_id_by_address(all_stores, ADDRESS)
 
-    category_slug, canonical_url = parser.find_canonical_url(store_id,
-                                                             ALL_PRODUCTS,
-                                                             CATEGORY)
-
-    params = {
-        "store_id": f"{store_id}",
-        "page": "1",
-        "per_page": "24",
-        "tenant_id": "sbermarket",
-        "category_permalink": category_slug,
-        "store_meta_keys": [],
-        "store_meta_values": [],
-        "filter": [
-            {"key": "brand", "values": []},
-            {"key": "permalinks", "values": []},
-            {"key": "discounted", "values": []}
-        ],
-        "ads_identity": {
-            "ads_promo_identity": {
-                "site_uid": "c9qep2jupf8ugo3scn10",
-                "placement_uid": "cg4tmrigsvdveog2p240"
+    all_products = {}
+    for category in CATEGORIES:
+        category_slug, canonical_url = await parser.find_canonical_url(
+            store_id, ALL_PRODUCTS, category)
+        tasks = []
+        for page in range(1, PAGES + 1):
+            params = {
+                "store_id": f"{store_id}",
+                "page": f"{page}",
+                "per_page": "24",
+                "tenant_id": "sbermarket",
+                "category_permalink": category_slug,
+                "store_meta_keys": [],
+                "store_meta_values": [],
+                "filter": [
+                    {"key": "brand", "values": []},
+                    {"key": "permalinks", "values": []},
+                    {"key": "discounted", "values": []}
+                ],
+                "ads_identity": {
+                    "ads_promo_identity": {
+                        "site_uid": "c9qep2jupf8ugo3scn10",
+                        "placement_uid": "cg4tmrigsvdveog2p240"
+                    }
+                }
             }
-        }
-    }
+            task = parser.fetch_products(params, category)
+            tasks.append(task)
+        products_list = await asyncio.gather(*tasks)
+        for products in products_list:
+            all_products.update(products)
 
-    products = parser.fetch_products(params)
-
-    save_to_csv(products, 'products.csv')
+    await parser.close()
+    save_to_csv(all_products, 'products.csv')
     logging.info("Parser finished successfully")
 
 
 def save_to_csv(data, filename):
     if data:
-        keys = data[list(data.keys())[0]].keys()
+        keys = data[next(iter(data))].keys()
         with open(filename, 'w', newline='', encoding='utf-8') as output_file:
             dict_writer = csv.DictWriter(output_file,
                                          fieldnames=['name'] + list(keys))
@@ -100,4 +115,4 @@ def save_to_csv(data, filename):
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
