@@ -1,20 +1,24 @@
 import asyncio
 import csv
 import logging
+import os
+
+from dotenv import load_dotenv
 
 from parsertest.proxy import get_proxy, check_proxies
 from parsertest.utils import get_selenium_driver
 from sbermarket import SbermarketParser
 
-BASE_URL = 'https://sbermarket.ru/'
-URL_FOR_CITY_ID = ('https://sbermarket.ru/api/v3/cities?lat=55.678088&'
-                   'lon=37.722738&with_pickup=true&per_page=500')
-URL_PRODUCTS = "https://sbermarket.ru/api/web/v1/products"
-CITY_NAME = "Москва"
-STORE_NAME = "METRO"
-ADDRESS = "Москва, Проспект Мира, 211с1"
-ALL_PRODUCTS = "Все товары категории"
-CATEGORIES = ["Овощи, фрукты, орехи", "Сладости", "Мясо, птица"]
+load_dotenv()
+
+BASE_URL = os.getenv("BASE_URL")
+URL_FOR_CITY_ID = os.getenv("URL_FOR_CITY_ID")
+URL_PRODUCTS = os.getenv("URL_PRODUCTS")
+CITY_NAME = os.getenv("CITY_NAME")
+STORE_NAME = os.getenv("STORE_NAME")
+ADDRESS = os.getenv("ADDRESS")
+ALL_PRODUCTS = os.getenv("ALL_PRODUCTS")
+CATEGORIES = os.getenv("CATEGORIES")
 PAGES = 3
 
 HEADERS = {

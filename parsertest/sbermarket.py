@@ -1,16 +1,24 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from typing import Union, Optional
 
 import aiohttp
 from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.chrome.webdriver import WebDriver
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class SbermarketParser:
-    def __init__(self, driver, headers, base_url, url_products):
+    def __init__(
+            self,
+            driver: WebDriver,
+            headers: dict[str, any],
+            base_url: str,
+            url_products: str,
+    ):
         self.driver = driver
         self.headers = headers
         self.base_url = base_url
@@ -19,18 +27,21 @@ class SbermarketParser:
         self.executor = ThreadPoolExecutor()
         self.conn_limit = 100
 
-    async def get_cookies(self, url):
+    def get_cookies_sync(self, url: str) -> list[dict[str, str]]:
+        self.driver.get(url)
+        return self.driver.get_cookies()
+
+    async def get_cookies(self, url: str) -> dict[str, str]:
         try:
-            await self.loop.run_in_executor(self.executor, self.driver.get,
-                                            url)
             cookies = await self.loop.run_in_executor(self.executor,
-                                                      self.driver.get_cookies)
+                                                      self.get_cookies_sync,
+                                                      url)
             return {cookie['name']: cookie['value'] for cookie in cookies}
         except WebDriverException as e:
             logging.error(f"Error getting cookies from {url}: {e}")
             return {}
 
-    async def fetch_data(self, url, cookies):
+    async def fetch_data(self, url: str, cookies: dict[str, str]) -> dict:
         try:
             async with aiohttp.ClientSession(headers=self.headers,
                                              cookies=cookies) as session:
@@ -42,32 +53,33 @@ class SbermarketParser:
             logging.error(f"Error fetching data from {url}: {e}")
             return {}
 
-    def find_city_id(self, cities, city_name):
+    def find_city_id(self, cities: list[dict[str, Union[str, int]]],
+                     city_name: str) -> Optional[int]:
         city = next((city for city in cities if city['name'] == city_name),
                     None)
         return city['id'] if city else None
 
-    def find_store_id(self, stores, store_name):
-        store = next(
-            (store for store in stores if store['name'] == store_name), None)
-        return (store['id'], store['slug']) if store else (None, None)
+    def find_store_id(self, stores: list[dict[str, any]], store_name: str) -> \
+            tuple[Optional[int], Optional[str]]:
+        store_dict = {store['name']: (store['id'], store['slug']) for store in
+                      stores}
+        return store_dict.get(store_name, (None, None))
 
-    async def fetch_all_stores(self, city_id, retailer_id, cookies,
-                               per_page=10):
+    async def fetch_all_stores(self, city_id: int, retailer_id: int,
+                               cookies: dict[str, str],
+                               per_page: int = 10) -> list[dict[str, any]]:
         all_stores = []
         page = 1
+        url_template = (f"{self.base_url}api/v3/stores_with_pagination?"
+                        f"city_id={city_id}&retailer_id={retailer_id}&"
+                        f"include=full_address%2Cdistance%2Copening_hours_text&"
+                        f"shipping_method=pickup_from_store&zero_price=true&"
+                        f"page={page}&per_page={per_page}")
 
         while True:
-            paginated_url = (f"{self.base_url}api/v3/stores_with_pagination?"
-                             f"city_id={city_id}&retailer_id={retailer_id}&"
-                             f"include=full_address%2Cdistance%2Copening_"
-                             f"hours_text&shipping_method=pickup_from_store&z"
-                             f"ero_price=true&page={page}&per_page={per_page}")
+            paginated_url = url_template.format(page=page)
             data = await self.fetch_data(paginated_url, cookies)
             stores = data.get('stores', [])
-
-            if not stores:
-                break
 
             all_stores.extend(stores)
             if len(stores) < per_page:
@@ -78,12 +90,17 @@ class SbermarketParser:
         logging.info(f"Total stores fetched: {len(all_stores)}")
         return all_stores
 
-    def find_store_id_by_address(self, stores, address):
+    def find_store_id_by_address(
+            self, stores: list[dict[str, any]], address: str
+    ) -> Optional[int]:
         store = next((store for store in stores if
                       store.get('full_address') == address), None)
         return store['store_id'] if store else None
 
-    async def find_canonical_url(self, store_id, name1, name2):
+    async def find_canonical_url(self, store_id: int, name1: str,
+                                 name2: str) -> tuple[
+        Optional[str], Optional[str]]:
+
         url = f"{self.base_url}api/v3/stores/{store_id}/categories?depth=2"
         js_script = """
         var callback = arguments[arguments.length - 1];
@@ -111,7 +128,7 @@ class SbermarketParser:
         logging.error("Failed to get a valid response from the server.")
         return None, None
 
-    async def fetch_products(self, params, category):
+    async def fetch_products(self, params: dict, category: str) -> dict:
         js_script = """
         var callback = arguments[arguments.length - 1];
         fetch(arguments[0], {
